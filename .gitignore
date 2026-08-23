@@ -1,0 +1,72 @@
+# ---- Rust / Cargo ----
+# Build artifacts (workspace root and any nested crate targets)
+target/
+**/target/
+
+# Rust backtrace/profiling leftovers
+*.pdb
+perf.data
+perf.data.old
+flamegraph.svg
+
+# Note: Cargo.lock IS committed on purpose — this workspace produces
+# binaries (server, stun), so reproducible builds matter.
+
+# ---- Secrets / local config ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+config.local.*
+
+# ---- Editors / IDEs ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# ---- OS cruft ----
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+# Linux
+.directory
+.Trash-*
+
+# ---- Logs / temp ----
+*.log
+logs/
+tmp/
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# ---- Frontend (when it lands) ----
+node_modules/
+dist/
+build/
+.next/
+.cache/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
