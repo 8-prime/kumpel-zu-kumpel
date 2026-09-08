@@ -1,6 +1,7 @@
+use eyre::Ok;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
-    io::{self, BufRead},
+    io::{self},
     net::SocketAddr,
 };
 use tokio::{net::UdpSocket, task::JoinSet};
@@ -8,6 +9,84 @@ use zerocopy::{
     FromBytes, Immutable, KnownLayout,
     network_endian::{U16, U32},
 };
+
+pub enum Address {
+    V4(u32),
+    V6(u128),
+}
+const IPV4_ATTR_LEN: usize = 64;
+const IPV6_ATTR_LEN: usize = 160;
+
+struct EncodedXorAddress {
+    bytes: [u8; IPV6_ATTR_LEN],
+    len: usize,
+}
+
+impl EncodedXorAddress {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+pub struct XorAddressAttribute {
+    pub x_port: u16,
+    pub x_addr: Address,
+}
+
+impl From<XorAddressAttribute> for EncodedXorAddress {
+    fn from(value: XorAddressAttribute) -> Self {
+        let mut bytes = [0u8; IPV6_ATTR_LEN];
+
+        let len = match value.x_addr {
+            Address::V4(_) => IPV4_ATTR_LEN,
+            Address::V6(_) => IPV6_ATTR_LEN,
+        };
+
+        let add_family: u8 = match value.x_addr {
+            Address::V4(_) => 0x01,
+            Address::V6(_) => 0x02,
+        };
+
+        bytes[1] = add_family;
+        bytes[2..].copy_from_slice(&value.x_port.to_be_bytes());
+
+        match value.x_addr {
+            Address::V4(v4) => bytes[3..].copy_from_slice(&v4.to_be_bytes()),
+            Address::V6(v6) => bytes[3..].copy_from_slice(&v6.to_be_bytes()),
+        };
+
+        return EncodedXorAddress { bytes, len };
+    }
+}
+
+impl XorAddressAttribute {
+    pub fn new(addr_info: AddressInfo, stun_header: StunHeader) -> Self {
+        match addr_info.addr {
+            Address::V4(v4) => {
+                return XorAddressAttribute {
+                    x_port: addr_info.port ^ ((stun_header.magic_cookie.get() >> 16) as u16),
+                    x_addr: Address::V4(v4 ^ stun_header.magic_cookie.get()),
+                };
+            }
+            Address::V6(v6) => {
+                let mut x_or_bytes: [u8; 16] = [0; 16];
+                x_or_bytes[..4].copy_from_slice(&stun_header.magic_cookie.to_bytes());
+                x_or_bytes[4..].copy_from_slice(&stun_header.transaction_id);
+                let x_or_mask = u128::from_be_bytes(x_or_bytes);
+
+                return XorAddressAttribute {
+                    x_port: addr_info.port ^ ((stun_header.magic_cookie.get() >> 16) as u16),
+                    x_addr: Address::V6(v6 ^ x_or_mask),
+                };
+            }
+        }
+    }
+}
+
+pub struct AddressInfo {
+    pub port: u16,
+    pub addr: Address,
+}
 
 #[derive(FromBytes, KnownLayout, Immutable)]
 #[repr(C)]
