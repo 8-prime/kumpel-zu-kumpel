@@ -1,7 +1,24 @@
 use socket2::{Domain, Protocol, Socket, Type};
-use std::{io, net::SocketAddr};
+use std::{
+    io::{self, BufRead},
+    net::SocketAddr,
+};
 use tokio::{net::UdpSocket, task::JoinSet};
+use zerocopy::{
+    FromBytes, Immutable, KnownLayout,
+    network_endian::{U16, U32},
+};
 
+#[derive(FromBytes, KnownLayout, Immutable)]
+#[repr(C)]
+pub struct StunHeader {
+    pub message_type: U16,
+    pub message_length: U16,
+    pub magic_cookie: U32,
+    pub transaction_id: [u8; 12],
+}
+
+#[derive(Debug, PartialEq)]
 enum StunClass {
     Request,
     Indication,
@@ -23,13 +40,24 @@ impl TryFrom<u16> for StunClass {
     }
 }
 
-const BINDING: u8 = 0b1;
+impl From<StunClass> for u16 {
+    fn from(value: StunClass) -> Self {
+        match value {
+            StunClass::Request => 0b00,
+            StunClass::Indication => 0b01,
+            StunClass::Success => 0b10,
+            StunClass::ErrorResponse => 0b11,
+        }
+    }
+}
 
-enum MessageType {}
+const BINDING: u16 = 0b1;
+const MAGIC_COOKIE: u32 = 0x2112A442;
 
 struct StunMessageType {
     class: StunClass,
     is_binding: bool,
+    method: u16,
 }
 
 impl TryFrom<u16> for StunMessageType {
@@ -40,10 +68,10 @@ impl TryFrom<u16> for StunMessageType {
             return Err(());
         }
 
-        let message_low = value & 0b0000_0000_0000_1111;
-        let message_mid = (value & 0b0000_0000_1110_0000) >> 1;
-        let message_high = (value & 0b0011_1110_1110_0000) >> 2;
-        let message = message_high | message_mid | message_low;
+        let method_low = value & 0b0000_0000_0000_1111;
+        let method_mid = (value & 0b0000_0000_1110_0000) >> 1;
+        let method_high = (value & 0b0011_1110_0000_0000) >> 2;
+        let method = method_high | method_mid | method_low;
 
         let class_low = (value & 0b0000_0000_0001_0000) >> 4;
         let class_high = (value & 0b0000_0001_0000_0000) >> 7;
@@ -51,14 +79,37 @@ impl TryFrom<u16> for StunMessageType {
         let stun_class = class.try_into()?;
 
         return Ok(StunMessageType {
-            class: StunClass::Indication,
-            is_binding: true,
+            class: stun_class,
+            is_binding: method == BINDING,
+            method,
         });
+    }
+}
+
+impl From<StunMessageType> for u16 {
+    fn from(value: StunMessageType) -> Self {
+        let mut message_bits = 0;
+        let method_low = value.method & 0b0000_0000_0000_1111;
+        let method_mid = (value.method & 0b0000_0000_0111_0000) << 1;
+        let method_high = (value.method & 0b0000_1111_1000_0000) << 2;
+        message_bits |= method_high | method_mid | method_low;
+
+        let class_bytes: u16 = value.class.into();
+
+        let class_high = (class_bytes & 0b0000_0000_0000_0010) << 7;
+        let class_low = (class_bytes & 0b0000_0000_0000_0001) << 4;
+
+        message_bits |= class_high | class_low;
+        return message_bits;
     }
 }
 
 fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
 
     // Windows has no SO_REUSEPORT; SO_REUSEADDR already allows multiple
     // sockets to bind the same addr:port there.
@@ -71,25 +122,40 @@ fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
     UdpSocket::from_std(socket.into())
 }
 
-async fn process(id: usize, socket: UdpSocket) -> io::Result<()> {
+async fn process(id: usize, socket: UdpSocket) -> eyre::Result<()> {
     let mut buf = vec![0u8; 32];
     let (len, addr) = socket.recv_from(&mut buf).await?;
-
+    println!("Received some shit");
     if len < 20 {
         return Ok(());
     }
+    let (header, _): (&StunHeader, &[u8]) =
+        StunHeader::ref_from_prefix(buf.as_ref()).map_err(|err| eyre::eyre!("{err}"))?;
 
-    for b in &buf {
-        print!("{:08b} ", b);
+    let message_type: StunMessageType = u16::from(header.message_type)
+        .try_into()
+        .map_err(|_| eyre::eyre!("Womp womp"))?;
+
+    if u32::from(header.magic_cookie) != MAGIC_COOKIE {
+        eyre::bail!("Invalid cookie");
     }
-    println!();
+
+    if message_type.class != StunClass::Request {
+        println!("I cannot handle non request class stun request");
+        eyre::bail!("Unspported stun class");
+    }
+
+    println!(
+        "Received request with class {:?} and is binding {}",
+        message_type.class, message_type.is_binding
+    );
 
     return Ok(());
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3478));
+    let addr = SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 3478));
     let workers = std::thread::available_parallelism()?.get();
 
     let mut tasks = JoinSet::new();
@@ -98,7 +164,11 @@ async fn main() -> io::Result<()> {
     }
 
     while let Some(result) = tasks.join_next().await {
-        result??;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("STUN worker error: {err:?}"),
+            Err(err) => eprintln!("STUN worker task failed: {err}"),
+        }
     }
     Ok(())
 }
