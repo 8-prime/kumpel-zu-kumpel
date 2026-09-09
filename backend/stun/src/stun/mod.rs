@@ -178,11 +178,6 @@ pub fn handle(buf: &[u8], address: Address, port: u16) -> eyre::Result<StunBuffe
         addr: address,
     };
 
-    println!(
-        "Built address info for port {} and address {:#?}",
-        address_info.port, address_info.addr
-    );
-
     let x_or_attr = XorAddressAttribute::new(address_info, header);
     let encoded: EncodedXorAddress = x_or_attr.into();
 
@@ -215,8 +210,6 @@ pub fn handle(buf: &[u8], address: Address, port: u16) -> eyre::Result<StunBuffe
     stun_buffer
         .push(encoded.as_bytes())
         .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
-
-    println!("Completed building stun response buffer");
 
     Ok(stun_buffer)
 }
