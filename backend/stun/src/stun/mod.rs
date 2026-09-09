@@ -40,6 +40,7 @@ impl StunBuffer {
     }
 }
 
+#[derive(Debug)]
 pub enum Address {
     V4(u32),
     V6(u128),
@@ -177,6 +178,11 @@ pub fn handle(buf: &[u8], address: Address, port: u16) -> eyre::Result<StunBuffe
         addr: address,
     };
 
+    println!(
+        "Built address info for port {} and address {:#?}",
+        address_info.port, address_info.addr
+    );
+
     let x_or_attr = XorAddressAttribute::new(address_info, header);
     let encoded: EncodedXorAddress = x_or_attr.into();
 
@@ -192,8 +198,8 @@ pub fn handle(buf: &[u8], address: Address, port: u16) -> eyre::Result<StunBuffe
     let response_message: u16 = response_message_type.into();
     let response_header = StunHeader {
         magic_cookie: header.magic_cookie,
-        message_length: encoded.len.into(),
-        message_type: (response_message + ATTR_HEADER_LEN).into(),
+        message_length: (attr_info.length + ATTR_HEADER_LEN).into(),
+        message_type: response_message.into(),
         transaction_id: header.transaction_id,
     };
 
@@ -209,6 +215,8 @@ pub fn handle(buf: &[u8], address: Address, port: u16) -> eyre::Result<StunBuffe
     stun_buffer
         .push(encoded.as_bytes())
         .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
+
+    println!("Completed building stun response buffer");
 
     Ok(stun_buffer)
 }

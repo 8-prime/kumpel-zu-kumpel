@@ -33,7 +33,8 @@ pub async fn process(_: usize, socket: UdpSocket) -> eyre::Result<()> {
     };
 
     let stun_buffer = handle(&buf[..len], address, addr.port())?;
-
+    println!("Sending buffer to client");
     socket.send_to(stun_buffer.as_bytes(), addr).await?;
+    println!("Sent buffer to client");
     return Ok(());
 }
