@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{io, net::UdpSocket};
@@ -24,18 +24,24 @@ pub fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
 }
 
 pub async fn process(_: usize, socket: UdpSocket) -> eyre::Result<()> {
+    let mut buf = [0u8; 32];
     loop {
-        let mut buf = vec![0u8; 32];
         let (len, addr) = socket.recv_from(&mut buf).await?;
-        let address = match addr.ip() {
-            std::net::IpAddr::V4(ipv4_addr) => Address::V4(u32::from_be_bytes(ipv4_addr.octets())),
-            std::net::IpAddr::V6(ipv6_addr) => match ipv6_addr.to_ipv4() {
-                Some(ipv4_addr) => Address::V4(u32::from_be_bytes(ipv4_addr.octets())),
-                None => Address::V6(u128::from_be_bytes(ipv6_addr.octets())),
-            },
-        };
+        let address = stun_address(addr.ip());
 
         let stun_buffer = handle(&buf[..len], address, addr.port())?;
         socket.send_to(stun_buffer.as_bytes(), addr).await?;
+    }
+}
+
+fn stun_address(ip: IpAddr) -> Address {
+    match ip {
+        IpAddr::V4(ipv4_addr) => Address::V4(u32::from_be_bytes(ipv4_addr.octets())),
+        IpAddr::V6(ipv6_addr) => match ipv6_addr.octets() {
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, a, b, c, d] => {
+                Address::V4(u32::from_be_bytes([a, b, c, d]))
+            }
+            octets => Address::V6(u128::from_be_bytes(octets)),
+        },
     }
 }
