@@ -116,7 +116,7 @@ impl From<XorAddressAttribute> for EncodedXorAddress {
         bytes[2..4].copy_from_slice(&value.x_port.to_be_bytes());
 
         match value.x_addr {
-            Address::V4(v4) => bytes[4..7].copy_from_slice(&v4.to_be_bytes()),
+            Address::V4(v4) => bytes[4..8].copy_from_slice(&v4.to_be_bytes()),
             Address::V6(v6) => bytes[4..].copy_from_slice(&v6.to_be_bytes()),
         };
 
