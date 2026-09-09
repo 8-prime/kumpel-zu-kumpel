@@ -1,7 +1,7 @@
 use super::{Address, AddressInfo, StunHeader};
 
-const IPV4_ATTR_LEN: u16 = 64;
-const IPV6_ATTR_LEN: u16 = 160;
+const IPV4_ATTR_LEN: u16 = 8;
+const IPV6_ATTR_LEN: u16 = 20;
 pub const ATTR_HEADER_LEN: u16 = 4;
 
 #[derive(Clone, Copy)]
@@ -67,8 +67,8 @@ impl AttributeHeader {
     pub fn as_bytes(&self) -> [u8; 4] {
         let mut buf = [0u8; 4];
         let attr_type: u16 = self.attr_type.into();
-        buf[0..].copy_from_slice(&attr_type.to_be_bytes());
-        buf[2..].copy_from_slice(&self.length.to_be_bytes());
+        buf[0..2].copy_from_slice(&attr_type.to_be_bytes());
+        buf[2..4].copy_from_slice(&self.length.to_be_bytes());
 
         return buf;
     }
@@ -104,12 +104,20 @@ impl From<XorAddressAttribute> for EncodedXorAddress {
             Address::V6(_) => 0x02,
         };
 
+        //  0                   1                   2                   3
+        //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+        // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        // |0 0 0 0 0 0 0 0|    Family     |         X-Port                |
+        // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        // |                X-Address (Variable)
+        // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        // bytes[0] is an empty byte
         bytes[1] = add_family;
-        bytes[2..].copy_from_slice(&value.x_port.to_be_bytes());
+        bytes[2..4].copy_from_slice(&value.x_port.to_be_bytes());
 
         match value.x_addr {
-            Address::V4(v4) => bytes[3..].copy_from_slice(&v4.to_be_bytes()),
-            Address::V6(v6) => bytes[3..].copy_from_slice(&v6.to_be_bytes()),
+            Address::V4(v4) => bytes[4..7].copy_from_slice(&v4.to_be_bytes()),
+            Address::V6(v6) => bytes[4..].copy_from_slice(&v6.to_be_bytes()),
         };
 
         return EncodedXorAddress { bytes, len };

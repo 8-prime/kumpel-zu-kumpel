@@ -26,7 +26,7 @@ pub fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
 pub async fn process(_: usize, socket: UdpSocket) -> eyre::Result<()> {
     let mut buf = vec![0u8; 32];
     let (len, addr) = socket.recv_from(&mut buf).await?;
-
+    print!("Received incoming stun request");
     let address = match addr.ip() {
         std::net::IpAddr::V4(ipv4_addr) => Address::V4(u32::from_be_bytes(ipv4_addr.octets())),
         std::net::IpAddr::V6(ipv6_addr) => Address::V6(u128::from_be_bytes(ipv6_addr.octets())),
