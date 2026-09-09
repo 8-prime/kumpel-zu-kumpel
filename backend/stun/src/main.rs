@@ -1,4 +1,4 @@
-use eyre::Ok;
+use eyre::bail;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     io::{self},
@@ -6,25 +6,75 @@ use std::{
 };
 use tokio::{net::UdpSocket, task::JoinSet};
 use zerocopy::{
-    FromBytes, Immutable, KnownLayout,
+    FromBytes, Immutable, IntoBytes, KnownLayout,
     network_endian::{U16, U32},
 };
+
+struct StunBuffer {
+    bytes: [u8; 1500],
+    len: usize,
+}
+
+impl StunBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: [0; 1500],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> Result<(), ()> {
+        let end = self.len + bytes.len();
+
+        if end > self.bytes.len() {
+            return Err(());
+        }
+
+        self.bytes[self.len..end].copy_from_slice(bytes);
+        self.len = end;
+
+        Ok(())
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+const XOR_MAPPED_ADDRESS: u16 = 0x0020;
+const ATTR_HEADER_LEN: u16 = 4;
+
+pub struct AttributeHeader {
+    attr_type: u16,
+    length: u16,
+}
+
+impl AttributeHeader {
+    pub fn as_bytes(&self) -> [u8; 4] {
+        let mut buf = [0u8; 4];
+
+        buf[0..].copy_from_slice(&self.attr_type.to_be_bytes());
+        buf[2..].copy_from_slice(&self.length.to_be_bytes());
+
+        return buf;
+    }
+}
 
 pub enum Address {
     V4(u32),
     V6(u128),
 }
-const IPV4_ATTR_LEN: usize = 64;
-const IPV6_ATTR_LEN: usize = 160;
+const IPV4_ATTR_LEN: u16 = 64;
+const IPV6_ATTR_LEN: u16 = 160;
 
 struct EncodedXorAddress {
-    bytes: [u8; IPV6_ATTR_LEN],
-    len: usize,
+    bytes: [u8; IPV6_ATTR_LEN as usize],
+    len: u16,
 }
 
 impl EncodedXorAddress {
     pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
+        &self.bytes[..self.len as usize]
     }
 }
 
@@ -35,7 +85,7 @@ pub struct XorAddressAttribute {
 
 impl From<XorAddressAttribute> for EncodedXorAddress {
     fn from(value: XorAddressAttribute) -> Self {
-        let mut bytes = [0u8; IPV6_ATTR_LEN];
+        let mut bytes = [0u8; IPV6_ATTR_LEN as usize];
 
         let len = match value.x_addr {
             Address::V4(_) => IPV4_ATTR_LEN,
@@ -60,7 +110,7 @@ impl From<XorAddressAttribute> for EncodedXorAddress {
 }
 
 impl XorAddressAttribute {
-    pub fn new(addr_info: AddressInfo, stun_header: StunHeader) -> Self {
+    pub fn new(addr_info: AddressInfo, stun_header: &StunHeader) -> Self {
         match addr_info.addr {
             Address::V4(v4) => {
                 return XorAddressAttribute {
@@ -88,7 +138,7 @@ pub struct AddressInfo {
     pub addr: Address,
 }
 
-#[derive(FromBytes, KnownLayout, Immutable)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct StunHeader {
     pub message_type: U16,
@@ -135,8 +185,13 @@ const MAGIC_COOKIE: u32 = 0x2112A442;
 
 struct StunMessageType {
     class: StunClass,
-    is_binding: bool,
     method: u16,
+}
+
+impl StunMessageType {
+    pub fn is_binding(&self) -> bool {
+        return self.method == BINDING;
+    }
 }
 
 impl TryFrom<u16> for StunMessageType {
@@ -159,7 +214,6 @@ impl TryFrom<u16> for StunMessageType {
 
         return Ok(StunMessageType {
             class: stun_class,
-            is_binding: method == BINDING,
             method,
         });
     }
@@ -224,11 +278,51 @@ async fn process(id: usize, socket: UdpSocket) -> eyre::Result<()> {
         eyre::bail!("Unspported stun class");
     }
 
-    println!(
-        "Received request with class {:?} and is binding {}",
-        message_type.class, message_type.is_binding
-    );
+    let address = match addr.ip() {
+        std::net::IpAddr::V4(ipv4_addr) => Address::V4(u32::from_be_bytes(ipv4_addr.octets())),
+        std::net::IpAddr::V6(ipv6_addr) => Address::V6(u128::from_be_bytes(ipv6_addr.octets())),
+    };
 
+    let address_info = AddressInfo {
+        port: addr.port(),
+        addr: address,
+    };
+
+    let x_or_attr = XorAddressAttribute::new(address_info, header);
+    let encoded: EncodedXorAddress = x_or_attr.into();
+
+    let attr_info = AttributeHeader {
+        attr_type: XOR_MAPPED_ADDRESS,
+        length: encoded.len,
+    };
+    // stun method (use const)
+    //
+    let response_message_type = StunMessageType {
+        class: StunClass::Success,
+        method: BINDING,
+    };
+    let response_message: u16 = response_message_type.into();
+    let response_header = StunHeader {
+        magic_cookie: header.magic_cookie,
+        message_length: encoded.len.into(),
+        message_type: (response_message + ATTR_HEADER_LEN).into(),
+        transaction_id: header.transaction_id,
+    };
+
+    let mut stun_buffer = StunBuffer::new();
+    stun_buffer
+        .push(response_header.as_bytes())
+        .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
+
+    stun_buffer
+        .push(attr_info.as_bytes().as_ref())
+        .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
+
+    stun_buffer
+        .push(encoded.as_bytes())
+        .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
+
+    socket.send_to(stun_buffer.as_bytes(), addr).await?;
     return Ok(());
 }
 
