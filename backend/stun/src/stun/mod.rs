@@ -1,16 +1,12 @@
 pub mod attributes;
 
-use eyre::eyre;
 pub use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
     network_endian::{U16, U32},
 };
 
-use crate::stun::{
-    self,
-    attributes::{
-        ATTR_HEADER_LEN, AttributeHeader, AttributeType, EncodedXorAddress, XorAddressAttribute,
-    },
+use crate::stun::attributes::{
+    ATTR_HEADER_LEN, AttributeHeader, AttributeType, EncodedXorAddress, XorAddressAttribute,
 };
 
 pub struct StunBuffer {
