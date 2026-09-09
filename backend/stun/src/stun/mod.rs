@@ -1,8 +1,16 @@
 pub mod attributes;
 
+use eyre::eyre;
 pub use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout,
     network_endian::{U16, U32},
+};
+
+use crate::stun::{
+    self,
+    attributes::{
+        ATTR_HEADER_LEN, AttributeHeader, AttributeType, EncodedXorAddress, XorAddressAttribute,
+    },
 };
 
 pub struct StunBuffer {
@@ -145,6 +153,66 @@ impl From<StunMessageType> for u16 {
     }
 }
 
-pub fn handle() -> eyre::Result {
-    Ok(())
+pub fn handle(buf: &[u8], address: Address, port: u16) -> eyre::Result<StunBuffer> {
+    if buf.len() < 20 {
+        eyre::bail!("invalid buffer length");
+    }
+    let (header, _): (&StunHeader, &[u8]) =
+        StunHeader::ref_from_prefix(buf.as_ref()).map_err(|err| eyre::eyre!("{err}"))?;
+
+    let message_type: StunMessageType = u16::from(header.message_type)
+        .try_into()
+        .map_err(|_| eyre::eyre!("Womp womp"))?;
+
+    if u32::from(header.magic_cookie) != MAGIC_COOKIE {
+        eyre::bail!("Invalid cookie");
+    }
+
+    if message_type.class != StunClass::Request {
+        eyre::bail!("Unspported stun class");
+    }
+
+    if !message_type.is_binding() {
+        eyre::bail!("I cannot handle non binding requests as of right now");
+    }
+
+    let address_info = AddressInfo {
+        port: port,
+        addr: address,
+    };
+
+    let x_or_attr = XorAddressAttribute::new(address_info, header);
+    let encoded: EncodedXorAddress = x_or_attr.into();
+
+    let attr_info = AttributeHeader {
+        attr_type: AttributeType::XorMappedAddress,
+        length: encoded.len,
+    };
+
+    let response_message_type = StunMessageType {
+        class: StunClass::Success,
+        method: BINDING,
+    };
+    let response_message: u16 = response_message_type.into();
+    let response_header = StunHeader {
+        magic_cookie: header.magic_cookie,
+        message_length: encoded.len.into(),
+        message_type: (response_message + ATTR_HEADER_LEN).into(),
+        transaction_id: header.transaction_id,
+    };
+
+    let mut stun_buffer = StunBuffer::new();
+    stun_buffer
+        .push(response_header.as_bytes())
+        .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
+
+    stun_buffer
+        .push(attr_info.as_bytes().as_ref())
+        .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
+
+    stun_buffer
+        .push(encoded.as_bytes())
+        .map_err(|_| eyre::eyre!("Failed to build response buffer"))?;
+
+    Ok(stun_buffer)
 }
