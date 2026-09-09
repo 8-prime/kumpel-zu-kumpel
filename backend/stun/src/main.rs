@@ -1,4 +1,3 @@
-use eyre::bail;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     io::{self},
@@ -255,7 +254,7 @@ fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
     UdpSocket::from_std(socket.into())
 }
 
-async fn process(id: usize, socket: UdpSocket) -> eyre::Result<()> {
+async fn process(_: usize, socket: UdpSocket) -> eyre::Result<()> {
     let mut buf = vec![0u8; 32];
     let (len, addr) = socket.recv_from(&mut buf).await?;
     println!("Received some shit");
@@ -274,8 +273,11 @@ async fn process(id: usize, socket: UdpSocket) -> eyre::Result<()> {
     }
 
     if message_type.class != StunClass::Request {
-        println!("I cannot handle non request class stun request");
         eyre::bail!("Unspported stun class");
+    }
+
+    if !message_type.is_binding() {
+        eyre::bail!("I cannot handle non binding requests as of right now");
     }
 
     let address = match addr.ip() {
@@ -295,8 +297,7 @@ async fn process(id: usize, socket: UdpSocket) -> eyre::Result<()> {
         attr_type: XOR_MAPPED_ADDRESS,
         length: encoded.len,
     };
-    // stun method (use const)
-    //
+
     let response_message_type = StunMessageType {
         class: StunClass::Success,
         method: BINDING,
