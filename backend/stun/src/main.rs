@@ -4,237 +4,18 @@ use std::{
     net::SocketAddr,
 };
 use tokio::{net::UdpSocket, task::JoinSet};
-use zerocopy::{
-    FromBytes, Immutable, IntoBytes, KnownLayout,
-    network_endian::{U16, U32},
+use zerocopy::{FromBytes, IntoBytes};
+
+use crate::stun::{
+    Address, AddressInfo, BINDING, MAGIC_COOKIE, StunBuffer, StunClass, StunHeader,
+    StunMessageType,
+    attributes::{
+        ATTR_HEADER_LEN, AttributeHeader, AttributeType, EncodedXorAddress, XorAddressAttribute,
+    },
 };
 
-struct StunBuffer {
-    bytes: [u8; 1500],
-    len: usize,
-}
-
-impl StunBuffer {
-    fn new() -> Self {
-        Self {
-            bytes: [0; 1500],
-            len: 0,
-        }
-    }
-
-    fn push(&mut self, bytes: &[u8]) -> Result<(), ()> {
-        let end = self.len + bytes.len();
-
-        if end > self.bytes.len() {
-            return Err(());
-        }
-
-        self.bytes[self.len..end].copy_from_slice(bytes);
-        self.len = end;
-
-        Ok(())
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
-
-const XOR_MAPPED_ADDRESS: u16 = 0x0020;
-const ATTR_HEADER_LEN: u16 = 4;
-
-pub struct AttributeHeader {
-    attr_type: u16,
-    length: u16,
-}
-
-impl AttributeHeader {
-    pub fn as_bytes(&self) -> [u8; 4] {
-        let mut buf = [0u8; 4];
-
-        buf[0..].copy_from_slice(&self.attr_type.to_be_bytes());
-        buf[2..].copy_from_slice(&self.length.to_be_bytes());
-
-        return buf;
-    }
-}
-
-pub enum Address {
-    V4(u32),
-    V6(u128),
-}
-const IPV4_ATTR_LEN: u16 = 64;
-const IPV6_ATTR_LEN: u16 = 160;
-
-struct EncodedXorAddress {
-    bytes: [u8; IPV6_ATTR_LEN as usize],
-    len: u16,
-}
-
-impl EncodedXorAddress {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len as usize]
-    }
-}
-
-pub struct XorAddressAttribute {
-    pub x_port: u16,
-    pub x_addr: Address,
-}
-
-impl From<XorAddressAttribute> for EncodedXorAddress {
-    fn from(value: XorAddressAttribute) -> Self {
-        let mut bytes = [0u8; IPV6_ATTR_LEN as usize];
-
-        let len = match value.x_addr {
-            Address::V4(_) => IPV4_ATTR_LEN,
-            Address::V6(_) => IPV6_ATTR_LEN,
-        };
-
-        let add_family: u8 = match value.x_addr {
-            Address::V4(_) => 0x01,
-            Address::V6(_) => 0x02,
-        };
-
-        bytes[1] = add_family;
-        bytes[2..].copy_from_slice(&value.x_port.to_be_bytes());
-
-        match value.x_addr {
-            Address::V4(v4) => bytes[3..].copy_from_slice(&v4.to_be_bytes()),
-            Address::V6(v6) => bytes[3..].copy_from_slice(&v6.to_be_bytes()),
-        };
-
-        return EncodedXorAddress { bytes, len };
-    }
-}
-
-impl XorAddressAttribute {
-    pub fn new(addr_info: AddressInfo, stun_header: &StunHeader) -> Self {
-        match addr_info.addr {
-            Address::V4(v4) => {
-                return XorAddressAttribute {
-                    x_port: addr_info.port ^ ((stun_header.magic_cookie.get() >> 16) as u16),
-                    x_addr: Address::V4(v4 ^ stun_header.magic_cookie.get()),
-                };
-            }
-            Address::V6(v6) => {
-                let mut x_or_bytes: [u8; 16] = [0; 16];
-                x_or_bytes[..4].copy_from_slice(&stun_header.magic_cookie.to_bytes());
-                x_or_bytes[4..].copy_from_slice(&stun_header.transaction_id);
-                let x_or_mask = u128::from_be_bytes(x_or_bytes);
-
-                return XorAddressAttribute {
-                    x_port: addr_info.port ^ ((stun_header.magic_cookie.get() >> 16) as u16),
-                    x_addr: Address::V6(v6 ^ x_or_mask),
-                };
-            }
-        }
-    }
-}
-
-pub struct AddressInfo {
-    pub port: u16,
-    pub addr: Address,
-}
-
-#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
-#[repr(C)]
-pub struct StunHeader {
-    pub message_type: U16,
-    pub message_length: U16,
-    pub magic_cookie: U32,
-    pub transaction_id: [u8; 12],
-}
-
-#[derive(Debug, PartialEq)]
-enum StunClass {
-    Request,
-    Indication,
-    Success,
-    ErrorResponse,
-}
-
-impl TryFrom<u16> for StunClass {
-    type Error = ();
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        match value {
-            0b00 => Ok(StunClass::Request),
-            0b01 => Ok(StunClass::Indication),
-            0b10 => Ok(StunClass::Success),
-            0b11 => Ok(StunClass::ErrorResponse),
-            _ => Err(()),
-        }
-    }
-}
-
-impl From<StunClass> for u16 {
-    fn from(value: StunClass) -> Self {
-        match value {
-            StunClass::Request => 0b00,
-            StunClass::Indication => 0b01,
-            StunClass::Success => 0b10,
-            StunClass::ErrorResponse => 0b11,
-        }
-    }
-}
-
-const BINDING: u16 = 0b1;
-const MAGIC_COOKIE: u32 = 0x2112A442;
-
-struct StunMessageType {
-    class: StunClass,
-    method: u16,
-}
-
-impl StunMessageType {
-    pub fn is_binding(&self) -> bool {
-        return self.method == BINDING;
-    }
-}
-
-impl TryFrom<u16> for StunMessageType {
-    type Error = ();
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        if ((value & 0b1100_0000_0000_0000) >> 14) != 0b00 {
-            return Err(());
-        }
-
-        let method_low = value & 0b0000_0000_0000_1111;
-        let method_mid = (value & 0b0000_0000_1110_0000) >> 1;
-        let method_high = (value & 0b0011_1110_0000_0000) >> 2;
-        let method = method_high | method_mid | method_low;
-
-        let class_low = (value & 0b0000_0000_0001_0000) >> 4;
-        let class_high = (value & 0b0000_0001_0000_0000) >> 7;
-        let class = class_high | class_low;
-        let stun_class = class.try_into()?;
-
-        return Ok(StunMessageType {
-            class: stun_class,
-            method,
-        });
-    }
-}
-
-impl From<StunMessageType> for u16 {
-    fn from(value: StunMessageType) -> Self {
-        let mut message_bits = 0;
-        let method_low = value.method & 0b0000_0000_0000_1111;
-        let method_mid = (value.method & 0b0000_0000_0111_0000) << 1;
-        let method_high = (value.method & 0b0000_1111_1000_0000) << 2;
-        message_bits |= method_high | method_mid | method_low;
-
-        let class_bytes: u16 = value.class.into();
-
-        let class_high = (class_bytes & 0b0000_0000_0000_0010) << 7;
-        let class_low = (class_bytes & 0b0000_0000_0000_0001) << 4;
-
-        message_bits |= class_high | class_low;
-        return message_bits;
-    }
-}
+mod network;
+mod stun;
 
 fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
@@ -257,7 +38,6 @@ fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
 async fn process(_: usize, socket: UdpSocket) -> eyre::Result<()> {
     let mut buf = vec![0u8; 32];
     let (len, addr) = socket.recv_from(&mut buf).await?;
-    println!("Received some shit");
     if len < 20 {
         return Ok(());
     }
@@ -294,7 +74,7 @@ async fn process(_: usize, socket: UdpSocket) -> eyre::Result<()> {
     let encoded: EncodedXorAddress = x_or_attr.into();
 
     let attr_info = AttributeHeader {
-        attr_type: XOR_MAPPED_ADDRESS,
+        attr_type: AttributeType::XorMappedAddress,
         length: encoded.len,
     };
 
