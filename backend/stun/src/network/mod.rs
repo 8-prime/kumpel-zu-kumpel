@@ -1,11 +1,14 @@
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{io, net::UdpSocket};
 
 use crate::stun::{Address, handle};
 
-pub fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
+pub fn bind_worker(addr: SocketAddr) -> io::Result<Arc<UdpSocket>> {
     let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
 
     if addr.is_ipv6() {
@@ -20,10 +23,10 @@ pub fn bind_worker(addr: SocketAddr) -> io::Result<UdpSocket> {
     socket.bind(&addr.into())?;
     socket.set_nonblocking(true)?;
 
-    UdpSocket::from_std(socket.into())
+    Ok(Arc::new(UdpSocket::from_std(socket.into())?))
 }
 
-pub async fn process(_: usize, socket: UdpSocket) -> eyre::Result<()> {
+pub async fn process(_: usize, socket: Arc<UdpSocket>) -> eyre::Result<()> {
     let mut buf = [0u8; 32];
     loop {
         let (len, addr) = socket.recv_from(&mut buf).await?;

@@ -13,10 +13,10 @@ mod stun;
 async fn main() -> io::Result<()> {
     let addr = SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 3478));
     let workers = std::thread::available_parallelism()?.get();
-
+    let socket = bind_worker(addr)?;
     let mut tasks = JoinSet::new();
     for id in 0..workers {
-        tasks.spawn(process(id, bind_worker(addr)?));
+        tasks.spawn(process(id, socket.clone()));
     }
 
     while let Some(result) = tasks.join_next().await {
