@@ -1,6 +1,14 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
-use eyre::eyre;
+use axum::{
+    Router,
+    extract::{Path, State, WebSocketUpgrade, ws::WebSocket},
+    response::Response,
+    routing::get,
+};
 use tokio::sync::mpsc;
 
 enum SessionSignal {
@@ -20,6 +28,7 @@ impl Session {
     }
 }
 
+//TODO:  scc hasmap down the road https://docs.rs/scc/latest/scc/
 struct SessionStore {
     sessions: Mutex<HashMap<String, Session>>,
 }
@@ -162,6 +171,34 @@ impl SessionStore {
 //
 // offer websocket connection to allow for passing relevant info between peer and server
 
-fn main() {
-    println!("Hello, world!");
+async fn handle_socket(
+    socket: WebSocket,
+    sessions: Arc<SessionStore>,
+    session_id: String,
+    role: String,
+) {
+}
+
+async fn ws_handler(
+    State(sessions): State<Arc<SessionStore>>,
+    Path((session_id, role)): Path<(String, String)>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_socket(socket, sessions, session_id, role))
+}
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    let sessions = Arc::new(SessionStore {
+        sessions: Mutex::new(HashMap::new()),
+    });
+
+    let app = Router::new()
+        .route("/ws/{session_id}/{role}", get(ws_handler))
+        .with_state(sessions);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }
