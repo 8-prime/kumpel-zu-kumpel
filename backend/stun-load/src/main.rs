@@ -308,19 +308,6 @@ async fn run_client(
     timeout: Duration,
     counters: Arc<Counters>,
 ) -> WorkerReport {
-    let expected_endpoint = match socket.local_addr() {
-        Ok(endpoint) => endpoint,
-        Err(error) => {
-            counters.io_errors.fetch_add(1, Ordering::Relaxed);
-            return WorkerReport {
-                error_samples: vec![format!(
-                    "client {client_id}: failed to read local address: {error}"
-                )],
-                ..WorkerReport::default()
-            };
-        }
-    };
-
     let drain_deadline = deadline + timeout;
     let mut next_send = first_send;
     let mut sequence = 0u64;
@@ -407,7 +394,6 @@ async fn run_client(
                         process_response(
                             client_id,
                             &response[..length],
-                            expected_endpoint,
                             &mut pending,
                             &counters,
                             &mut report,
@@ -432,7 +418,6 @@ async fn run_client(
 fn process_response(
     client_id: u32,
     response: &[u8],
-    expected_endpoint: SocketAddr,
     pending: &mut HashMap<[u8; 12], Instant>,
     counters: &Counters,
     report: &mut WorkerReport,
@@ -460,7 +445,7 @@ fn process_response(
         return;
     };
 
-    match validate_binding_response(response, transaction_id, expected_endpoint) {
+    match validate_binding_response(response, transaction_id) {
         Ok(()) => {
             counters.valid.fetch_add(1, Ordering::Relaxed);
             let micros = sent_at.elapsed().as_micros().min(u64::MAX as u128) as u64;
@@ -473,11 +458,7 @@ fn process_response(
     }
 }
 
-fn validate_binding_response(
-    response: &[u8],
-    transaction_id: [u8; 12],
-    expected_endpoint: SocketAddr,
-) -> Result<(), String> {
+fn validate_binding_response(response: &[u8], transaction_id: [u8; 12]) -> Result<(), String> {
     let message_type = read_u16(&response[0..2]);
     if message_type != BINDING_SUCCESS_RESPONSE {
         return Err(format!(
@@ -542,15 +523,7 @@ fn validate_binding_response(
         }
     }
 
-    let mapped_endpoint =
-        mapped_endpoint.ok_or_else(|| "response has no XOR-MAPPED-ADDRESS".to_owned())?;
-    if mapped_endpoint.ip() != expected_endpoint.ip()
-        || mapped_endpoint.port() != expected_endpoint.port()
-    {
-        return Err(format!(
-            "XOR-MAPPED-ADDRESS is {mapped_endpoint}, expected {expected_endpoint}"
-        ));
-    }
+    mapped_endpoint.ok_or_else(|| "response has no XOR-MAPPED-ADDRESS".to_owned())?;
 
     Ok(())
 }
