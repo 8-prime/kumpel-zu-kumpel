@@ -1,18 +1,22 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Mutex};
 
-use eyre::{Ok, eyre};
+use eyre::eyre;
+use tokio::sync::mpsc;
+
+enum SessionSignal {
+    StartStun,
+    /// The raw response returned by the other peer's STUN request.
+    ReceivePeerInformation(Vec<u8>),
+}
 
 struct Session {
-    send_peer_connected: bool,
-    receive_peer_connected: bool,
+    send_peer_signals: Option<mpsc::Sender<SessionSignal>>,
+    receive_peer_signals: Option<mpsc::Sender<SessionSignal>>,
 }
 
 impl Session {
     pub fn all_offline(&self) -> bool {
-        return self.send_peer_connected && self.receive_peer_connected;
+        return self.send_peer_signals.is_none() && self.receive_peer_signals.is_none();
     }
 }
 
@@ -21,37 +25,95 @@ struct SessionStore {
 }
 
 impl SessionStore {
-    pub fn set_receiver_online(&self, session_id: String) -> eyre::Result {
+    // The WebSocket handler owns the receiving end of this channel.
+    pub fn set_receiver_online(
+        &self,
+        session_id: String,
+        signals: mpsc::Sender<SessionSignal>,
+    ) -> eyre::Result<()> {
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|err| eyre::eyre!("Session mutex poisoned: {err}"))?;
 
         let session = sessions.entry(session_id).or_insert_with(|| Session {
-            receive_peer_connected: false,
-            send_peer_connected: false,
+            receive_peer_signals: None,
+            send_peer_signals: None,
         });
 
-        session.receive_peer_connected = true;
+        session.receive_peer_signals = Some(signals);
         return Ok(());
     }
 
-    pub fn set_sender_online(&self, session_id: String) -> eyre::Result {
+    // The WebSocket handler owns the receiving end of this channel.
+    pub fn set_sender_online(
+        &self,
+        session_id: String,
+        signals: mpsc::Sender<SessionSignal>,
+    ) -> eyre::Result<()> {
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|err| eyre::eyre!("Session mutex poisoned: {err}"))?;
 
         let session = sessions.entry(session_id).or_insert_with(|| Session {
-            receive_peer_connected: false,
-            send_peer_connected: false,
+            receive_peer_signals: None,
+            send_peer_signals: None,
         });
 
-        session.send_peer_connected = true;
+        session.send_peer_signals = Some(signals);
         return Ok(());
     }
 
-    pub fn set_sender_offline(&self, session_id: String) -> eyre::Result {
+    pub async fn send_to_sender(
+        &self,
+        session_id: &str,
+        signal: SessionSignal,
+    ) -> eyre::Result<()> {
+        let signals = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|err| eyre!("Session mutex poisoned: {err}"))?;
+
+            sessions
+                .get(session_id)
+                .and_then(|session| session.send_peer_signals.clone())
+                .ok_or_else(|| eyre!("Sender is offline for session {session_id}"))?
+        };
+
+        // Release the sessions lock before waiting for channel capacity.
+        signals
+            .send(signal)
+            .await
+            .map_err(|_| eyre!("Sender signal channel closed for session {session_id}"))
+    }
+
+    pub async fn send_to_receiver(
+        &self,
+        session_id: &str,
+        signal: SessionSignal,
+    ) -> eyre::Result<()> {
+        let signals = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|err| eyre!("Session mutex poisoned: {err}"))?;
+
+            sessions
+                .get(session_id)
+                .and_then(|session| session.receive_peer_signals.clone())
+                .ok_or_else(|| eyre!("Receiver is offline for session {session_id}"))?
+        };
+
+        // Release the sessions lock before waiting for channel capacity.
+        signals
+            .send(signal)
+            .await
+            .map_err(|_| eyre!("Receiver signal channel closed for session {session_id}"))
+    }
+
+    pub fn set_sender_offline(&self, session_id: String) -> eyre::Result<()> {
         let mut sessions = self
             .sessions
             .lock()
@@ -61,7 +123,7 @@ impl SessionStore {
             return Ok(());
         };
 
-        session.send_peer_connected = false;
+        session.send_peer_signals = None;
         if session.all_offline() {
             sessions.remove(&session_id);
         }
@@ -69,7 +131,7 @@ impl SessionStore {
         return Ok(());
     }
 
-    pub fn set_receiver_offline(&self, session_id: String) -> eyre::Result {
+    pub fn set_receiver_offline(&self, session_id: String) -> eyre::Result<()> {
         let mut sessions = self
             .sessions
             .lock()
@@ -79,7 +141,7 @@ impl SessionStore {
             return Ok(());
         };
 
-        session.receive_peer_connected = false;
+        session.receive_peer_signals = None;
         if session.all_offline() {
             sessions.remove(&session_id);
         }
