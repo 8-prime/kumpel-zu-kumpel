@@ -27,7 +27,7 @@ Open `http://127.0.0.1:5173`, create a link, and open the receiver link in anoth
 
 For peers on different devices, serve the frontend through HTTPS, proxy `/ws` to the Rust server with WebSocket upgrade support, and set the Rust server's `STUN_SERVER` to a STUN URI reachable from **both clients** (for example `stun:stun.your-domain.example:3478`). The default `stun:127.0.0.1:3478` is only for local development. `SIGNAL_ADDR` sets the Rust listen address, defaulting to `127.0.0.1:3000`.
 
-An optional build-time `VITE_SIGNALING_URL=https://signal.your-domain.example` selects a different signaling origin. The default uses the frontend's own origin. `npm run build` produces `frontend/dist`; serve it with your existing web server. `npm run preview` serves the build but does not proxy signaling, so use a configured signaling origin when previewing separately.
+An optional build-time `VITE_SIGNALING_URL=https://signal.your-domain.example` selects a different signaling origin. The default uses the frontend's own origin. `npm run build` produces `frontend/dist`; the Rust server serves this directory at `http://127.0.0.1:3000` when started from `backend`. Set `FRONTEND_DIR` to override the static-file directory. The [root Dockerfile](../Dockerfile) builds and serves both projects in one image; see the [Docker instructions](../README.md#docker). `npm run preview` serves the build but does not proxy signaling, so use a configured signaling origin when previewing separately.
 
 ## Link and key handling
 

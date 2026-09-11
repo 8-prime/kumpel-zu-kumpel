@@ -17,6 +17,7 @@ use eyre::eyre;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
+use tower_http::services::ServeDir;
 
 #[derive(Clone)]
 enum SessionSignal {
@@ -361,8 +362,11 @@ async fn main() -> eyre::Result<()> {
             .unwrap_or_else(|_| "stun:127.0.0.1:3478".to_owned()),
     });
 
+    let frontend_dir =
+        std::env::var("FRONTEND_DIR").unwrap_or_else(|_| "../frontend/dist".to_owned());
     let app = Router::new()
         .route("/ws/{session_id}/{role}", get(ws_handler))
+        .fallback_service(ServeDir::new(frontend_dir))
         .with_state(sessions);
 
     let address = std::env::var("SIGNAL_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_owned());
