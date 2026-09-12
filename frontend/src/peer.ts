@@ -1,6 +1,7 @@
 import { decrypt, encrypt, importSessionKey } from './crypto';
 import { opposite, signalingUrl, type Session } from './session';
 import { FileTransfer, type TransferFile } from './transfer';
+import { prepareDownloads } from './download';
 
 export type ConnectionStatus = 'connecting' | 'waiting' | 'gathering' | 'negotiating' | 'verifying' | 'connected' | 'error';
 type Callbacks = { status: (status: ConnectionStatus, error?: string) => void; file: (file: TransferFile) => void };
@@ -28,6 +29,7 @@ export class PeerSession {
         throw new Error('Open this page over HTTPS or localhost in a browser that supports WebRTC.');
       }
       this.key = await importSessionKey(this.session.key);
+      if (this.session.role === 'receiver') await prepareDownloads();
       if (this.stopped) return;
       this.callbacks.status('connecting');
       this.ws = new WebSocket(signalingUrl(import.meta.env.VITE_SIGNALING_URL || location.origin, this.session));
@@ -158,6 +160,9 @@ export class PeerSession {
     if (!this.transfer || !this.authenticated) throw new Error('Wait until your peer is connected.');
     await this.transfer.sendFiles(files);
   }
+
+  acceptFile(id: string) { return this.transfer?.acceptFile(id); }
+  declineFile(id: string) { return this.transfer?.declineFile(id); }
 
   private fail(error: unknown) {
     if (this.stopped) return;

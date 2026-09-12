@@ -17,9 +17,19 @@ function readInitial(): { session: Session | null; error?: string } {
 }
 
 function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  const unit = bytes > 0 ? Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1) : 0;
+  return `${unit ? (bytes / 1024 ** unit).toFixed(1) : bytes} ${units[unit]}`;
+}
+
+function fileStatus(file: TransferFile, sender: boolean) {
+  if (file.status === 'complete') return sender ? 'Delivered to your peer’s browser' : 'Transfer complete — check your browser’s Downloads';
+  if (file.status === 'offered') return sender ? 'Waiting for your peer to accept' : 'Accept to start downloading';
+  if (file.status === 'starting') return 'Starting your browser’s download';
+  if (file.status === 'declined') return 'Declined';
+  if (file.status === 'failed') return 'Transfer interrupted';
+  if (file.status === 'queued') return 'Queued';
+  return `${file.status === 'sending' ? 'Sending' : 'Receiving'} ${Math.round(file.bytes / (file.size || 1) * 100)}%`;
 }
 
 function Icon({ kind, size = 22 }: { kind: 'link' | 'file' | 'lock' | 'copy' | 'arrow' | 'check' | 'upload'; size?: number }) {
@@ -47,7 +57,6 @@ function App() {
   const peer = useRef<PeerSession | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const linkInput = useRef<HTMLInputElement>(null);
-  const objectUrls = useRef(new Set<string>());
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const sender = session?.role !== 'receiver';
   const connected = !!session && status === 'connected';
@@ -59,8 +68,7 @@ function App() {
     const connection = new PeerSession(session, {
       status: (next, message) => { if (active) { setStatus(next); if (message) setError(message); } },
       file: file => {
-        if (!active) { if (file.downloadUrl) URL.revokeObjectURL(file.downloadUrl); return; }
-        if (file.downloadUrl) objectUrls.current.add(file.downloadUrl);
+        if (!active) return;
         setFiles(current => {
           const index = current.findIndex(item => item.id === file.id);
           return index < 0 ? [...current, file] : current.map(item => item.id === file.id ? file : item);
@@ -73,12 +81,18 @@ function App() {
       active = false;
       connection.dispose();
       peer.current = null;
-      objectUrls.current.forEach(url => URL.revokeObjectURL(url));
-      objectUrls.current.clear();
     };
   }, [session]);
 
   useEffect(() => () => clearTimeout(copyTimer.current), []);
+
+  const transferring = files.some(file => ['starting', 'sending', 'receiving'].includes(file.status));
+  useEffect(() => {
+    if (!transferring) return;
+    const leaving = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', leaving);
+    return () => window.removeEventListener('beforeunload', leaving);
+  }, [transferring]);
 
   function reset() {
     setSession(null);
@@ -134,7 +148,7 @@ function App() {
       <main>
         <div className="intro">
           <h1>{sender ? 'A file. A link. A friend.' : 'You’re on the receiving end.'}</h1>
-          <p>{sender ? 'Send files straight to another device, encrypted from end to end.' : 'Keep this page open. Your files will arrive here, already decrypted.'}</p>
+          <p>{sender ? 'Send files straight to another device, encrypted from end to end.' : 'Accept each file to download it. Keep this page open until the transfer finishes.'}</p>
         </div>
 
         <section className="workspace" aria-label="File transfer">
@@ -177,19 +191,22 @@ function App() {
               onDragOver={event => { event.preventDefault(); if (!sending) setDragging(true); }}
               onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); void sendFiles(Array.from(event.dataTransfer.files)); }}>
               <Icon kind="upload" size={32} /><h3>{sending ? 'Sending directly to your peer' : 'Drop your files here'}</h3>
-              <p>{sending ? 'Keep this page open until receipt is confirmed.' : 'Choose one file or a handful. Up to 256 MB per link.'}</p>
+              <p>{sending ? 'Your peer accepts each file before it starts. Keep this page open.' : 'Large files welcome. Your peer saves through their browser’s Downloads.'}</p>
               <button className="primary-button" disabled={sending} onClick={() => input.current?.click()}>{sending ? 'Transfer in progress' : 'Choose files'}</button>
               <input ref={input} aria-label="Choose files to send" type="file" multiple hidden disabled={sending} onChange={event => { void sendFiles(Array.from(event.target.files || [])); event.target.value = ''; }} />
             </div>}
 
-            {connected && !sender && files.length === 0 && <div className="receive-empty"><Icon kind="file" size={42} /><h3>Ready to receive.</h3><p>The sender can now choose files. They’ll appear here as they arrive.</p></div>}
+            {connected && !sender && files.length === 0 && <div className="receive-empty"><Icon kind="file" size={42} /><h3>Ready to receive.</h3><p>Offered files will appear here with their sizes. You choose which to download.</p></div>}
 
             {error && <div className="error-message" role="alert">{error}</div>}
 
             {files.length > 0 && <div className="file-list" aria-label="Transferred files"><div className="file-list-heading"><h3>Your files</h3><span>{files.filter(file => file.status === 'complete').length} of {files.length} complete</span></div>{files.map(file => <div className="file-row" key={file.id}>
-              <div className="file-icon"><Icon kind="file" /></div><div className="file-details"><strong title={file.name}>{file.name}</strong><span>{formatBytes(file.size)} · {file.status === 'complete' ? sender ? 'Received by your peer' : 'Decrypted and ready' : file.status === 'failed' ? 'Transfer interrupted' : file.status === 'queued' ? 'Queued' : `${file.status === 'sending' ? 'Sending' : 'Receiving'} ${Math.round(file.bytes / (file.size || 1) * 100)}%`}</span>
-              {file.status !== 'complete' && file.status !== 'failed' && <progress aria-label={`Progress for ${file.name}`} value={file.bytes} max={file.size || 1} />}</div>
-              {file.downloadUrl ? <a className="download-button" href={file.downloadUrl} download={file.name}>Save<span className="sr-only"> {file.name}</span></a> : file.status === 'complete' ? <span className="complete-icon"><Icon kind="check" /></span> : null}
+              <div className="file-icon"><Icon kind="file" /></div><div className="file-details"><strong title={file.name}>{file.name}</strong><span title={`${file.size.toLocaleString()} bytes`}>{formatBytes(file.size)} · {fileStatus(file, sender)}</span>
+              {(file.status === 'sending' || file.status === 'receiving') && <progress aria-label={`Progress for ${file.name}`} value={file.bytes} max={file.size || 1} />}</div>
+              {!sender && connected && file.status === 'offered' ? <div className="file-actions">
+                <button className="download-button" onClick={() => void peer.current?.acceptFile(file.id)} aria-label={`Accept download ${file.name}`}>Accept download</button>
+                <button className="text-button" onClick={() => void peer.current?.declineFile(file.id)} aria-label={`Decline ${file.name}`}>Decline</button>
+              </div> : file.status === 'complete' ? <span className="complete-icon"><Icon kind="check" /></span> : null}
             </div>)}</div>}
 
             <div className="transfer-footnote"><Icon kind="lock" size={16} /><span>{connected ? 'Files travel directly between your devices.' : 'No file uploads. No account needed.'}</span></div>
