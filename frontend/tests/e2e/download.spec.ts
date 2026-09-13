@@ -110,6 +110,7 @@ test('browser download cancellation stops the peer and does not report success',
   const download = await downloadEvent;
   await download.cancel();
   await expect(receiver.getByRole('alert')).toContainText('cancelled');
+  await expect(receiver.locator('.transfer-speed')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as any).virtualTransfer.error)).not.toBe('');
   expect(await page.evaluate(() => (window as any).virtualTransfer.complete)).toBe(false);
   await receiver.close();
