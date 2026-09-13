@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
     <meta name="description" content="Send encrypted files directly to a friend." />
+    <script>
+      // Apply the preference before the page paints, including when storage is blocked.
+      let theme = 'system';
+      try {
+        const saved = localStorage.getItem('kumpel-theme');
+        if (saved === 'light' || saved === 'dark') theme = saved;
+      } catch {}
+      document.documentElement.dataset.themePreference = theme;
+      document.documentElement.dataset.theme = theme === 'system'
+        ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : theme;
+    </script>
     <title>Kumpel zu Kumpel</title>
   </head>
   <body>

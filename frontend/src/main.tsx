@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { PeerSession, type ConnectionStatus } from './peer';
 import { createSession, readSession, sessionUrl, type Session } from './session';
 import type { TransferFile } from './transfer';
+import { ThemePicker } from './ThemePicker';
 import './style.css';
 
 const statusText: Record<ConnectionStatus, string> = {
@@ -142,7 +143,10 @@ function App() {
         <a className="wordmark" href="/" onClick={event => { event.preventDefault(); reset(); }} aria-label="Kumpel zu Kumpel home">
           kumpel<span>zu</span>kumpel<span className="brand-period">.</span>
         </a>
-        <span className="privacy-label"><Icon kind="lock" size={16} /> Only between you two</span>
+        <div className="header-actions">
+          <span className="privacy-label"><Icon kind="lock" size={16} /> Only between you two</span>
+          <ThemePicker />
+        </div>
       </header>
 
       <main>
