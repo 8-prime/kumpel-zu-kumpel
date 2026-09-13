@@ -14,7 +14,8 @@ async function createLink(page: Page) {
 }
 
 test('two peers transfer exact bytes after closing signaling; the key stays out of network requests', async ({ page, browser }) => {
-  const peerContext = await browser.newContext();
+  await page.emulateMedia({ colorScheme: 'dark' });
+  const peerContext = await browser.newContext({ colorScheme: 'dark' });
   const receiver = await peerContext.newPage();
   const errors: string[] = [];
   const urls: string[] = [];
@@ -50,6 +51,13 @@ test('two peers transfer exact bytes after closing signaling; the key stays out 
   await expect(page.getByRole('status')).toHaveText('Connected directly', { timeout: 60_000 });
   await expect(receiver.getByRole('status')).toHaveText('Connected directly');
   await expect.poll(async () => (await page.evaluate(() => window.signalTrace.closed)) + (await receiver.evaluate(() => window.signalTrace.closed))).toBe(2);
+
+  // Switching themes must preserve the established transfer session.
+  await page.getByRole('combobox', { name: 'Theme' }).selectOption('light');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
+  await page.getByRole('combobox', { name: 'Theme' }).selectOption('dark');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
+  await expect(receiver.locator('html')).toHaveCSS('color-scheme', 'dark');
 
   const payloads = [
     { name: 'hello-ä.txt', mimeType: 'text/plain', buffer: Buffer.from('Hello, Kumpel! 🦊\n') },

@@ -2,6 +2,8 @@
 
 React + TypeScript + Vite, using the browser's native WebSocket, WebRTC, and Web Crypto APIs. The sender creates a link, the receiver opens it, and files travel directly between their devices over an ordered WebRTC data channel.
 
+The **Theme** selector offers **System** (the default), **Light**, and **Dark**. System follows the device's color scheme, including changes while the page is open. An explicit choice is saved locally in the browser; selecting System clears that override. If browser storage is blocked, theme selection still works for the current page. The theme is applied before the app renders and can be changed during a transfer.
+
 ## Run locally
 
 From `backend`, start the signaling server:
