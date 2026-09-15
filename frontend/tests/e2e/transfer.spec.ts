@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 declare global {
   interface Window { signalTrace: { urls: string[]; frames: string[]; closed: number } }
+  interface Window { pauseFileReads: boolean }
 }
 
 async function createLink(page: Page) {
@@ -96,6 +97,68 @@ test('two peers transfer exact bytes after closing signaling; the key stays out 
   await expect(page.getByRole('status')).toHaveText('Connection interrupted');
   await expect(page.getByRole('alert')).toContainText(/disconnected|connection failed/);
   await peerContext.close();
+});
+
+test('both peers show current file speed, including stalls and subsequent files', async ({ page, browser }) => {
+  // Slow the real source reads so both UIs can be observed during a transfer.
+  await page.addInitScript(() => {
+    window.pauseFileReads = false;
+    const read = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = async function () {
+      await new Promise(resolve => setTimeout(resolve, 40));
+      while (window.pauseFileReads) await new Promise(resolve => setTimeout(resolve, 40));
+      return read.call(this);
+    };
+  });
+  const receiver = await browser.newPage();
+  try {
+    const link = await createLink(page);
+    await receiver.goto(link);
+    await expect(page.getByRole('status')).toHaveText('Connected directly', { timeout: 60_000 });
+    await expect(receiver.getByRole('status')).toHaveText('Connected directly');
+    for (const tab of [page, receiver]) await tab.setViewportSize({ width: 390, height: 844 });
+
+    const payloads = [
+      { name: 'speed.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(2 * 1024 ** 2, 7) },
+      { name: 'next.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(1024 ** 2, 9) },
+      { name: 'empty.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(0) },
+    ];
+    await page.getByLabel('Choose files to send').setInputFiles(payloads);
+    for (const payload of payloads) {
+      const speeds = [page, receiver].map(tab => tab.getByLabel(`Transfer speed for ${payload.name}`, { exact: true }));
+      await expect(receiver.getByRole('button', { name: `Accept download ${payload.name}`, exact: true })).toBeVisible();
+      for (const tab of [page, receiver]) await expect(tab.locator('.transfer-speed')).toHaveCount(0);
+
+      await page.evaluate(() => { window.pauseFileReads = true; });
+      const downloadEvent = receiver.waitForEvent('download');
+      await receiver.getByRole('button', { name: `Accept download ${payload.name}`, exact: true }).click();
+      const download = await downloadEvent;
+      if (payload.buffer.length) {
+        for (const speed of speeds) await expect(speed).toHaveText('0 B/s');
+        await page.evaluate(() => { window.pauseFileReads = false; });
+        for (const speed of speeds) {
+          await expect(speed).toHaveText(/^\d+(\.\d+)? (B|KiB|MiB|GiB)\/s$/);
+          await expect(speed).not.toHaveText('0 B/s');
+        }
+        if (payload.name === 'speed.bin') {
+          await page.evaluate(() => { window.pauseFileReads = true; });
+          for (const speed of speeds) await expect(speed).toHaveText('0 B/s');
+          for (const tab of [page, receiver]) {
+            await expect(tab.getByRole('progressbar', { name: `Progress for ${payload.name}`, exact: true })).toBeVisible();
+            expect(await tab.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          }
+          await page.evaluate(() => { window.pauseFileReads = false; });
+          for (const speed of speeds) await expect(speed).not.toHaveText('0 B/s');
+          await page.screenshot({ path: `test-results/speed-sender-${test.info().project.name}.png`, fullPage: true });
+          await receiver.screenshot({ path: `test-results/speed-receiver-${test.info().project.name}.png`, fullPage: true });
+        }
+      }
+      expect(await download.failure()).toBeNull();
+      expect(await readFile((await download.path())!)).toEqual(payload.buffer);
+      for (const speed of speeds) await expect(speed).toHaveCount(0);
+    }
+    for (const tab of [page, receiver]) await expect(tab.getByText('3 of 3 complete')).toBeVisible();
+  } finally { await receiver.close(); }
 });
 
 test('a wrong fragment key cannot authenticate the peer', async ({ page, browser }) => {

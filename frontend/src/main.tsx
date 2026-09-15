@@ -4,6 +4,7 @@ import { PeerSession, type ConnectionStatus } from './peer';
 import { createSession, readSession, sessionUrl, type Session } from './session';
 import type { TransferFile } from './transfer';
 import { ThemePicker } from './ThemePicker';
+import { TransferSpeed } from './transfer-speed';
 import './style.css';
 
 const statusText: Record<ConnectionStatus, string> = {
@@ -205,7 +206,8 @@ function App() {
             {error && <div className="error-message" role="alert">{error}</div>}
 
             {files.length > 0 && <div className="file-list" aria-label="Transferred files"><div className="file-list-heading"><h3>Your files</h3><span>{files.filter(file => file.status === 'complete').length} of {files.length} complete</span></div>{files.map(file => <div className="file-row" key={file.id}>
-              <div className="file-icon"><Icon kind="file" /></div><div className="file-details"><strong title={file.name}>{file.name}</strong><span title={`${file.size.toLocaleString()} bytes`}>{formatBytes(file.size)} · {fileStatus(file, sender)}</span>
+              <div className="file-icon"><Icon kind="file" /></div><div className="file-details"><strong title={file.name}>{file.name}</strong><div className="file-metadata"><span title={`${file.size.toLocaleString()} bytes`}>{formatBytes(file.size)} · {fileStatus(file, sender)}</span>
+              {(file.status === 'sending' || file.status === 'receiving') && <TransferSpeed bytes={file.bytes} name={file.name} />}</div>
               {(file.status === 'sending' || file.status === 'receiving') && <progress aria-label={`Progress for ${file.name}`} value={file.bytes} max={file.size || 1} />}</div>
               {!sender && connected && file.status === 'offered' ? <div className="file-actions">
                 <button className="download-button" onClick={() => void peer.current?.acceptFile(file.id)} aria-label={`Accept download ${file.name}`}>Accept download</button>
