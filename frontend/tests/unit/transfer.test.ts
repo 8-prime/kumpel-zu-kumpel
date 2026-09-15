@@ -28,7 +28,7 @@ class Channel extends EventTarget {
 }
 
 const sessions: FileTransfer[] = [];
-afterEach(() => { sessions.splice(0).forEach(session => session.dispose()); });
+afterEach(() => { sessions.splice(0).forEach(session => session.dispose()); vi.restoreAllMocks(); });
 
 async function pair(sink: DownloadSink) {
   const key = await importSessionKey(createSession().key);
@@ -100,7 +100,7 @@ describe('streamed file protocol', () => {
     void sending.catch(() => {});
     await vi.waitFor(() => expect(p.received.size).toBe(1));
     await p.receiver.acceptFile([...p.received.keys()][0]);
-    await vi.waitFor(() => expect(file.slice.mock.calls.length).toBeGreaterThan(63));
+    await vi.waitFor(() => expect(file.slice.mock.calls.reduce((sum, [start, end]) => sum + end - start, 0)).toBeGreaterThan(WINDOW_BYTES - 64 * 1024));
     const read = file.slice.mock.calls.reduce((sum, [start, end]) => sum + end - start, 0);
     expect(read).toBeLessThanOrEqual(WINDOW_BYTES);
     expect(target.write).toHaveBeenCalledTimes(1);
@@ -119,6 +119,63 @@ describe('streamed file protocol', () => {
     p.receiver.dispose();
     await rejected;
     expect([...p.sent.values()][0].status).toBe('failed');
+  });
+
+  it('preserves bytes across batches when encryption and decryption finish out of order', async () => {
+    let releaseEncryption!: () => void, releaseDecryption!: () => void;
+    const encryptionGate = new Promise<void>(resolve => { releaseEncryption = resolve; });
+    const decryptionGate = new Promise<void>(resolve => { releaseDecryption = resolve; });
+    let encryptedChunks = 0, decryptedChunks = 0;
+    const encrypt = crypto.subtle.encrypt.bind(crypto.subtle), decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, 'encrypt').mockImplementation(async (algorithm, key, data) => {
+      const ciphertext = await encrypt(algorithm, key, data);
+      if (data instanceof Uint8Array && data[0] === 3 && ++encryptedChunks === 1) await encryptionGate;
+      return ciphertext;
+    });
+    vi.spyOn(crypto.subtle, 'decrypt').mockImplementation(async (algorithm, key, data) => {
+      const plaintext = await decrypt(algorithm, key, data);
+      if (new Uint8Array(plaintext)[0] === 3 && ++decryptedChunks === 1) await decryptionGate;
+      return plaintext;
+    });
+    const chunks: Uint8Array[] = [];
+    const target = sink();
+    // The real download sink transfers ownership, detaching the input buffer.
+    target.write = vi.fn(async chunk => { chunks.push(structuredClone(chunk, { transfer: [chunk.buffer] })); });
+    const p = await pair(target);
+    const expected = Uint8Array.from({ length: 2 * WINDOW_BYTES + 17 }, (_, i) => (i * 31 + Math.floor(i / 65536)) % 251);
+    const sending = p.sender.sendFiles([new File([expected], 'ordered.bin')]);
+    await vi.waitFor(() => expect(p.received.size).toBe(1));
+    await p.receiver.acceptFile([...p.received.keys()][0]);
+    await vi.waitFor(() => expect(encryptedChunks).toBeGreaterThan(1));
+    expect(target.write).not.toHaveBeenCalled();
+    releaseEncryption();
+    await vi.waitFor(() => expect(decryptedChunks).toBeGreaterThan(1));
+    expect(target.write).not.toHaveBeenCalled();
+    releaseDecryption();
+    await sending;
+    expect(Buffer.concat(chunks).equals(Buffer.from(expected))).toBe(true);
+    expect(chunks.every(chunk => chunk.length <= 64 * 1024)).toBe(true);
+    expect(chunks.at(-1)?.length).toBe(17);
+    expect(target.close).toHaveBeenCalledOnce();
+    expect(p.error).not.toHaveBeenCalled();
+  });
+
+  it('stops queued work when the download rejects a batched write', async () => {
+    const target = sink();
+    target.write = vi.fn(async () => { throw new Error('Disk output failed'); });
+    const p = await pair(target);
+    const file = source(3 * WINDOW_BYTES);
+    const sending = p.sender.sendFiles([file]);
+    const rejected = expect(sending).rejects.toThrow();
+    await vi.waitFor(() => expect(p.received.size).toBe(1));
+    await p.receiver.acceptFile([...p.received.keys()][0]);
+    await rejected;
+    expect(target.write).toHaveBeenCalledOnce();
+    expect(target.close).not.toHaveBeenCalled();
+    expect([...p.sent.values()][0].status).toBe('failed');
+    expect(p.error).toHaveBeenCalledWith(expect.objectContaining({ message: 'Disk output failed' }));
+    const read = file.slice.mock.calls.reduce((sum, [start, end]) => sum + end - start, 0);
+    expect(read).toBeLessThanOrEqual(WINDOW_BYTES);
   });
 
   it('rejects a peer flooding the encrypted receive queue', async () => {
