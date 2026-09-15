@@ -3,6 +3,9 @@ import { createDownload, type DownloadSink } from './download';
 import { opposite, type Role } from './session';
 
 const CHUNK_BYTES = 16 * 1024 - 64;
+// Amortize file I/O and worker messages while retaining small WebRTC frames.
+const READ_BYTES = 16 * CHUNK_BYTES;
+const WRITE_BYTES = 64 * 1024;
 export const WINDOW_BYTES = 1024 * 1024;
 const LOW_WATER = 256 * 1024;
 const RECEIPT_INTERVAL = 64 * 1024;
@@ -17,7 +20,7 @@ export type TransferFile = {
 };
 
 type Callbacks = { ready: () => void; file: (file: TransferFile) => void; error: (error: Error) => void };
-type Incoming = { file: TransferFile; sink?: DownloadSink; reported: number };
+type Incoming = { file: TransferFile; sink?: DownloadSink; reported: number; buffer?: Uint8Array<ArrayBuffer>; buffered: number };
 type Pending<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void };
 function pending<T>(): Pending<T> {
   let resolve!: (value: T) => void;
@@ -68,7 +71,11 @@ export class FileTransfer {
       }
       this.queuedBytes += data.byteLength;
       this.queuedFrames++;
-      this.receiveQueue = this.receiveQueue.then(() => this.receive(data)).catch(error => this.fail(error)).finally(() => {
+      // Decrypt while earlier frames wait for disk output. Keep the bytes in the
+      // bounded receive budget until authenticated frames are consumed in order.
+      const plaintext = decrypt(this.key, data, `${this.context}:${opposite(this.role)}`);
+      void plaintext.catch(() => {});
+      this.receiveQueue = this.receiveQueue.then(async () => this.receive(await plaintext)).catch(error => this.fail(error)).finally(() => {
         this.queuedBytes -= data.byteLength;
         this.queuedFrames--;
       });
@@ -114,15 +121,18 @@ export class FileTransfer {
     }
   }
 
-  private send(type: Frame, payload = new Uint8Array()): Promise<void> {
+  private async send(type: Frame, payload = new Uint8Array()): Promise<void> {
+    if (this.stopped) throw new Error('The transfer has ended.');
+    if (this.sendSequence > 0xffffffff) throw new Error('Create a new link to continue transferring.');
+    const frame = new Uint8Array(5 + payload.length);
+    frame[0] = type;
+    new DataView(frame.buffer).setUint32(1, this.sendSequence++);
+    frame.set(payload, 5);
+    // Encryption may finish out of order; the send queue preserves wire order.
+    const encrypted = encrypt(this.key, frame, `${this.context}:${this.role}`);
+    void encrypted.catch(() => {});
     const task = this.sendQueue.then(async () => {
-      if (this.stopped) throw new Error('The transfer has ended.');
-      if (this.sendSequence > 0xffffffff) throw new Error('Create a new link to continue transferring.');
-      const frame = new Uint8Array(5 + payload.length);
-      frame[0] = type;
-      new DataView(frame.buffer).setUint32(1, this.sendSequence++);
-      frame.set(payload, 5);
-      const ciphertext = await encrypt(this.key, frame, `${this.context}:${this.role}`);
+      const ciphertext = await encrypted;
       await this.waitForCapacity();
       this.channel.send(ciphertext);
     });
@@ -130,9 +140,7 @@ export class FileTransfer {
     return task;
   }
 
-  private async receive(data: ArrayBuffer) {
-    if (this.stopped) return;
-    const plain = await decrypt(this.key, data, `${this.context}:${opposite(this.role)}`);
+  private async receive(plain: Uint8Array<ArrayBuffer>) {
     if (this.stopped) return;
     if (plain.length < 5 || new DataView(plain.buffer).getUint32(1) !== this.receiveSequence++) {
       throw new Error('File data arrived out of order. Transfer stopped.');
@@ -175,21 +183,33 @@ export class FileTransfer {
       const meta = JSON.parse(decoder.decode(payload));
       if (typeof meta.id !== 'string' || !meta.id.length || meta.id.length > 64 || typeof meta.name !== 'string' || meta.name.length > 1024 ||
           !Number.isSafeInteger(meta.size) || meta.size < 0) throw new Error('Invalid file details.');
-      this.incoming = { file: { id: meta.id, name: meta.name, size: meta.size, bytes: 0, status: 'offered' }, reported: 0 };
+      this.incoming = { file: { id: meta.id, name: meta.name, size: meta.size, bytes: 0, status: 'offered' }, reported: 0, buffered: 0 };
       this.callbacks.file({ ...this.incoming.file });
     } else if (type === Frame.Chunk) {
       const incoming = this.incoming;
       if (!incoming?.sink || incoming.file.status !== 'receiving' || !payload.length || payload.length > CHUNK_BYTES ||
-          incoming.file.bytes + payload.length > incoming.file.size) throw new Error('Unexpected file data or size mismatch.');
-      const length = payload.length;
-      await incoming.sink.write(payload);
-      if (this.stopped) return;
-      incoming.file.bytes += length;
-      this.progress(incoming.file);
-      // Credit is returned only after the browser's download stream accepts data.
-      if (incoming.file.bytes - incoming.reported >= RECEIPT_INTERVAL || incoming.file.bytes === incoming.file.size) {
-        incoming.reported = incoming.file.bytes;
-        await this.send(Frame.Progress, encoder.encode(JSON.stringify({ id: incoming.file.id, bytes: incoming.file.bytes })));
+          incoming.file.bytes + incoming.buffered + payload.length > incoming.file.size) throw new Error('Unexpected file data or size mismatch.');
+      for (let offset = 0; offset < payload.length;) {
+        const buffer = incoming.buffer ??= new Uint8Array(Math.min(WRITE_BYTES, incoming.file.size - incoming.file.bytes));
+        const length = Math.min(payload.length - offset, buffer.length - incoming.buffered);
+        buffer.set(payload.subarray(offset, offset + length), incoming.buffered);
+        incoming.buffered += length;
+        offset += length;
+        if (incoming.buffered === buffer.length) {
+          // The sink may transfer/detach this buffer. Never reuse it after write.
+          const written = buffer.length;
+          await incoming.sink.write(buffer);
+          if (this.stopped) return;
+          incoming.buffer = undefined;
+          incoming.buffered = 0;
+          incoming.file.bytes += written;
+          this.progress(incoming.file);
+          // Return credit only after the browser download accepts the whole batch.
+          if (incoming.file.bytes - incoming.reported >= RECEIPT_INTERVAL || incoming.file.bytes === incoming.file.size) {
+            incoming.reported = incoming.file.bytes;
+            await this.send(Frame.Progress, encoder.encode(JSON.stringify({ id: incoming.file.id, bytes: incoming.file.bytes })));
+          }
+        }
       }
     } else if (type === Frame.End) {
       const incoming = this.incoming;
@@ -263,12 +283,20 @@ export class FileTransfer {
         row.status = 'sending';
         this.acknowledgedBytes = 0;
         this.callbacks.file({ ...row });
-        for (let offset = 0; offset < source.size; offset += CHUNK_BYTES) {
-          await this.waitForCredit(Math.min(offset + CHUNK_BYTES, source.size));
-          const chunk = new Uint8Array(await source.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
-          await this.send(Frame.Chunk, chunk);
-          row.bytes += chunk.length;
-          this.progress(row);
+        for (let offset = 0; offset < source.size; offset += READ_BYTES) {
+          const end = Math.min(offset + READ_BYTES, source.size);
+          // Reserve credit for the entire read, including bytes not yet sent.
+          await this.waitForCredit(end);
+          const block = new Uint8Array(await source.slice(offset, end).arrayBuffer());
+          const sending: Promise<void>[] = [];
+          for (let start = 0; start < block.length; start += CHUNK_BYTES) {
+            const chunk = block.subarray(start, start + CHUNK_BYTES);
+            sending.push(this.send(Frame.Chunk, chunk).then(() => {
+              row.bytes += chunk.length;
+              this.progress(row);
+            }));
+          }
+          await Promise.all(sending);
         }
         const receipt = this.receipt = pending<void>();
         const timer = setTimeout(() => receipt.reject(new Error('Your peer did not finish downloading. Create a new link to retry.')), STALL_TIMEOUT);

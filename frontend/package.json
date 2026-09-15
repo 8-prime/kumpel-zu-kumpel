@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
+    "benchmark:transfer": "node tests/benchmark-transfer.mjs",
     "test:e2e": "playwright test",
     "test:firefox-native": "node tests/native-firefox.mjs"
   },
