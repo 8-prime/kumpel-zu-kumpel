@@ -195,8 +195,12 @@ progress::-webkit-progress-bar { background: var(--progress-track); border-radiu
 progress::-webkit-progress-value { background: var(--blue); border-radius: 3px; }
 progress::-moz-progress-bar { background: var(--blue); border-radius: 3px; }
 .download-button { background: var(--download-surface); color: var(--blue); border: 0; text-decoration: none; font-size: 14px; font-weight: 600; padding: 10px 15px; border-radius: 8px; }
+.download-button.needs-attention { box-shadow: 0 0 0 2px var(--focus); animation: accept-pulse 1.6s ease-in-out infinite; }
+@keyframes accept-pulse { 50% { box-shadow: 0 0 0 8px transparent; } }
 .file-actions { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .download-button:hover { background: var(--download-hover); }
+.sound-enable-button { margin-top: 12px; border: 1px solid var(--input-border); border-radius: 8px; background: var(--download-surface); color: var(--blue); padding: 8px 12px; font-size: 13px; font-weight: 600; }
+.sound-enable-button:hover { background: var(--download-hover); }
 .complete-icon { color: var(--success); }
 footer { display: flex; justify-content: space-between; gap: 20px; padding: 24px 0 35px; color: var(--footer-text); font-size: 13px; line-height: 1.6; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }

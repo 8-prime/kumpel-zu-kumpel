@@ -5,6 +5,7 @@ import { createSession, readSession, sessionUrl, type Session } from './session'
 import type { TransferFile } from './transfer';
 import { ThemePicker } from './ThemePicker';
 import { TransferSpeed } from './transfer-speed';
+import { IncomingFileAlert } from './incoming-file-alert';
 import './style.css';
 
 const statusText: Record<ConnectionStatus, string> = {
@@ -56,7 +57,10 @@ function App() {
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(false);
   const peer = useRef<PeerSession | null>(null);
+  const incomingAlert = useRef<IncomingFileAlert | null>(null);
+  const alertSound = useRef<HTMLAudioElement | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const linkInput = useRef<HTMLInputElement>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -88,6 +92,24 @@ function App() {
 
   useEffect(() => () => clearTimeout(copyTimer.current), []);
 
+  function playIncomingSound() {
+    const sound = alertSound.current ?? new Audio(`${import.meta.env.BASE_URL}soft_deep_double_knock.wav`);
+    alertSound.current = sound;
+    sound.currentTime = 0;
+    void sound.play().then(() => setSoundEnabled(true)).catch(() => setSoundEnabled(false));
+  }
+
+  useEffect(() => {
+    if (sender) return;
+    const alert = new IncomingFileAlert(playIncomingSound);
+    incomingAlert.current = alert;
+    return () => { alert.dispose(); incomingAlert.current = null; };
+  }, [sender]);
+
+  useEffect(() => {
+    incomingAlert.current?.update(files.filter(file => file.status === 'offered').map(file => file.id));
+  }, [files, sender]);
+
   const transferring = files.some(file => ['starting', 'sending', 'receiving'].includes(file.status));
   useEffect(() => {
     if (!transferring) return;
@@ -101,7 +123,7 @@ function App() {
     const url = new URL(location.href);
     url.search = ''; url.hash = '';
     history.replaceState(null, '', url);
-    setError(''); setFiles([]); setSending(false); setCopied(false);
+    setError(''); setFiles([]); setSending(false); setCopied(false); setSoundEnabled(false);
     setStatus('connecting');
   }
 
@@ -179,6 +201,7 @@ function App() {
 
           <div className="transfer-panel">
             <div className="panel-heading"><h2>{sender ? 'Send files' : 'Receive files'}</h2>{session && <button className="text-button" onClick={reset}>{connected ? 'End transfer' : 'Start over'}</button>}</div>
+            {!sender && session && !soundEnabled && <button className="sound-enable-button" onClick={playIncomingSound}>Enable sound alerts</button>}
 
             {!session ? <div className="create-link">
               <div className="link-symbol"><Icon kind="link" size={32} /></div>
@@ -210,7 +233,7 @@ function App() {
               {(file.status === 'sending' || file.status === 'receiving') && <TransferSpeed bytes={file.bytes} name={file.name} />}</div>
               {(file.status === 'sending' || file.status === 'receiving') && <progress aria-label={`Progress for ${file.name}`} value={file.bytes} max={file.size || 1} />}</div>
               {!sender && connected && file.status === 'offered' ? <div className="file-actions">
-                <button className="download-button" onClick={() => void peer.current?.acceptFile(file.id)} aria-label={`Accept download ${file.name}`}>Accept download</button>
+                <button className="download-button needs-attention" onClick={() => void peer.current?.acceptFile(file.id)} aria-label={`Accept download ${file.name}`}>Accept download</button>
                 <button className="text-button" onClick={() => void peer.current?.declineFile(file.id)} aria-label={`Decline ${file.name}`}>Decline</button>
               </div> : file.status === 'complete' ? <span className="complete-icon"><Icon kind="check" /></span> : null}
             </div>)}</div>}
