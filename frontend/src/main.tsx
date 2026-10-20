@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { QRCodeSVG } from 'qrcode.react';
 import { PeerSession, type ConnectionStatus } from './peer';
 import { createSession, readSession, sessionUrl, type Session } from './session';
 import type { TransferFile } from './transfer';
@@ -212,6 +213,10 @@ function App() {
               <label htmlFor="share-link">Your private share link</label>
               <div className="link-control"><input ref={linkInput} id="share-link" value={shareLink} readOnly onFocus={event => event.target.select()} /><button onClick={copyLink} aria-label={copied ? 'Link copied' : 'Copy share link'}><Icon kind={copied ? 'check' : 'copy'} />{copied ? 'Copied' : 'Copy'}</button></div>
               <p className="link-hint">The link includes the key to your files. Share it only with your receiving peer.</p>
+              <div className="share-qr">
+                <QRCodeSVG className="share-qr-code" value={shareLink} size={208} level="M" marginSize={4} bgColor="#ffffff" fgColor="#000000" role="img" aria-label="QR code to receive files" />
+                <div><h3>Scan to connect</h3><p>Scan with the receiving device’s camera to open your private link. Keep this page open while you connect.</p></div>
+              </div>
               <div className="waiting-state"><span className={status !== 'error' ? 'waiting-ring' : 'waiting-ring paused'} /><h3>{statusText[status]}</h3><p>{status === 'waiting' ? 'Send them the link, then leave this page open.' : status === 'error' ? 'Start over to create a new connection.' : 'Your files will be ready to send in a moment.'}</p></div>
             </div> : !sender && !connected ? <div className="waiting-state receiver-waiting"><span className={status !== 'error' ? 'waiting-ring' : 'waiting-ring paused'} /><h3>{statusText[status]}</h3><p>{status === 'error' ? 'Ask the sender for a new link.' : 'Keep this page open while your devices connect.'}</p></div> : null}
 
