@@ -39,6 +39,8 @@ https://files.example/?session=<uuid>&role=receiver#key=<base64url-256-bit-key>
 
 The sender's own URL has `role=sender`. The key is created with `crypto.getRandomValues`, stays in the URL fragment and browser memory, and is never included in a signaling URL or message. There are no analytics, external fonts, or third-party scripts. A [URL fragment is not sent to the HTTP server](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Fragment). Anyone with the complete link has the key, so the UI asks the sender to share it only with the intended peer.
 
+While waiting for a peer, the sender also sees a QR code for the complete receiver link, including its key fragment. The receiving device can scan it with its camera to join. QR codes are generated locally in the browser without contacting a QR service, and retain a white background and black modules in both themes.
+
 WebRTC handles STUN internally: browser JavaScript cannot send a raw UDP STUN request or retrieve its raw response. Peers exchange SDP offers/answers containing gathered ICE candidates, as described in [WebRTC connectivity](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Connectivity). This implementation uses non-trickle ICE: wait for gathering (up to 12 seconds), then relay one encrypted description per peer. Candidates collected by that point can still provide a local connection if the STUN server is unavailable.
 
 ## Signaling contract

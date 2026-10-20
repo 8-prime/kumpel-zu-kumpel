@@ -165,6 +165,10 @@ h3 { font-size: 22px; font-weight: 600; letter-spacing: -.5px; }
 .link-control input { border: none; min-width: 0; flex: 1; width: 100%; padding: 7px; color: var(--input-text); font-size: 14px; background: transparent; }
 .link-control button { border: 0; border-radius: 7px; display: flex; align-items: center; gap: 8px; padding: 10px 13px; color: var(--on-action); background: var(--action); font-size: 14px; }
 .link-hint { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 10px; }
+.share-qr { display: grid; grid-template-columns: minmax(0, 208px) minmax(0, 1fr); align-items: center; gap: 24px; margin-top: 24px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--input-surface); }
+.share-qr-code { display: block; width: 100%; height: auto; max-width: 208px; }
+.share-qr h3 { font-size: 17px; }
+.share-qr p { margin-top: 8px; color: var(--muted); font-size: 14px; line-height: 1.6; }
 .waiting-state { text-align: center; padding: 37px 0 20px; }
 .waiting-state h3 { font-size: 19px; }
 .waiting-ring { display: inline-block; border: 3px solid var(--spinner-track); border-top-color: var(--blue); width: 32px; height: 32px; border-radius: 50%; animation: spin 1.2s linear infinite; margin-bottom: 18px; }
@@ -210,6 +214,7 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 24px
   .connection-panel { padding: 28px 22px; }
   .transfer-panel { padding: 28px 25px; }
   .privacy-label { display: none; }
+  .share-qr { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 16px; text-align: center; }
 }
 @media (max-width: 650px) {
   .app-shell { padding: 0 18px; }
